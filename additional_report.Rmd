@@ -1,0 +1,522 @@
+---
+title: "Honeycomb Assessment - Additional Report"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-06-12"
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+library(shiny)
+library(bslib)
+
+library(shiny)
+
+### Required for functional shinylive
+if (FALSE) {
+  library("munsell")
+}
+
+library(RColorBrewer)
+library(bslib)
+library(ggplot2)
+
+# TODO - Fix Use of custom font for ggplot - not currently working
+# library(extrafont)
+#
+# font_import(paths = "docs/fonts", pattern = "Sans", prompt = FALSE)
+# loadfonts()
+# print(fonts())
+
+
+# data_file <- "https://raw.githubusercontent.com/thcworks/dashboard_assessment/refs/heads/main/data/honeycomb_test_data.csv"
+data_file <- "./data/honeycomb_test_data.csv"
+
+
+# Set point symbols
+# TODO find fix to unicode symbols not working in shinylive
+
+# small_plot_point <- "\u2B23"  # Set points as hexagon
+# point_size_small <- 3
+
+
+## Set up common values so they can be easily altered
+small_plot_point <- 16
+point_size_small <- 2
+point_size_large <- point_size_small * 1.5
+graph_font_size <- 14
+graph_font <- "sans"
+
+## Load Data
+test_data_csv <- read.csv(data_file)
+
+
+# Get current date - set to 01/01/2022 for demonstration purposes
+# cur_date <- Sys.Date()
+cur_date <- as.Date("2022-01-01")
+
+
+### Set up dataframe for recoding relationship -
+### after converting to lowercase and removing whitespace
+
+relationship_recode_info <- data.frame(
+  original = c(
+    "colleagueinanotherteam",
+    "teammate",
+    "colleaguefromadifferentteam",
+    "colleaguewithinmyteam",
+    "iamtheirlinemanager",
+    "theyaremylinemanager",
+    "self"
+  ),
+  replacement = c(
+    "Peer",
+    "Peer",
+    "Peer",
+    "Peer",
+    "Manager",
+    "Staff",
+    "Self"
+  )
+)
+
+## Vectors of characteristics column names for simplicity later
+
+characteristic_names <- c(
+  "u.sexuality",
+  "u.ethnicity",
+  "u.gender_identity",
+  "u.age",
+  "r.sexuality",
+  "r.ethnicity",
+  "r.gender_identity",
+  "r.age"
+)
+
+user_characteristic_names <- characteristic_names[1:4]
+
+### Verify data is in expected format
+### This should be extended to all required columns
+
+verify_data <- function(df) {
+  # TODO Check all used columns are in this list
+  # Check that required columns are all present
+  if (any(!c("value", "u.population_id", "relationship", "user_id") %in% names(df))) {
+    stop("Column names are not as expected - check data file")
+  }
+  
+  # Check review sources
+  
+  df[which(df[, "self_review"]), "relationship"] <- "self"
+  
+  df[, "relationship"] <- gsub("\\s+", "", tolower(df[, "relationship"]))
+  
+  df[, "relationship"] <- relationship_recode_info[
+    match(
+      df[, "relationship"],
+      relationship_recode_info[, "original"]
+    ),
+    "replacement"
+  ]
+  
+  df[!df[, "relationship"] %in% c("Peer", "Manager", "Staff", "Self"), ] <- "Unknown"
+  
+  if (any(df[, "relationship"] == "Unknown")) {
+    message("Not all review sources could be processed - marked as Unknown")
+  }
+  
+  # Check for duplicate entries
+  
+  int_entries <- nrow(df)
+  df <- df[!duplicated(df), ]
+  # 
+  # if (int_entries > nrow(df)) {
+  #   message("Duplicate entries found and removed")
+  # }
+  # 
+  # Convert Date to correct format
+  # NOTE - this assumes that time can be dismissed
+  df[, "completed_at"] <- as.Date(df[, "completed_at"], format = "%Y-%m-%d %H:%M:%S")
+  
+  
+  # Replace Missing or NA character values with 'Unknown'
+  
+  char_subset <- df[, characteristic_names]
+  
+  char_subset[is.na(char_subset) | char_subset == "" | char_subset == "Prefer not to say"] <- "Unknown"
+  
+  df[, characteristic_names] <- unname(char_subset)
+  
+  
+  # Convert values to numeric and flag if any values are in unexpected format
+  null_values_idx <- which(df[, "value"] == "null")
+  df[null_values_idx, "value"] <- NA
+  
+  withCallingHandlers(
+    {
+      df[, "value"] <- as.numeric(df[, "value"])
+    },
+    warning = function(w) {
+      if (grepl("NAs introduced by coercion", w$message)) {
+        message("Values that were not numeric or 'null' were unexpected and converted to NA")
+        invokeRestart("muffleWarning")
+      } else {
+        message(w$message)
+      }
+    }
+  )
+  
+  
+  return(df)
+}
+
+
+## Run verified function
+
+test_data_csv_verified <- verify_data(df = test_data_csv)
+
+rm(test_data_csv)
+
+
+test_data_csv_verified$behaviour_title_short <- paste0(substr(test_data_csv_verified$behaviour_title, 
+                                                              1, 27), "...(",test_data_csv_verified$behaviour_id, ")")
+
+behaviour_key <- unique(test_data_csv_verified[, c("behaviour_id", 
+                                                   "behaviour_title_short", 
+                                                   "behaviour_title")])
+
+
+### Average values for multiple values of the same behaviour score in same review
+
+av_value_behave_review <- aggregate(value ~ review_id + behaviour_id,  
+                                    test_data_csv_verified, 
+                                    mean, 
+                                    na.rm=TRUE)
+
+#  And add other columns back
+
+test_data_csv_verified <- data.frame(
+  av_value_behave_review,
+  test_data_csv_verified[
+    match(
+      paste0(av_value_behave_review$review_id, av_value_behave_review$behaviour_id, sep="_"),
+      paste0(test_data_csv_verified$review_id, test_data_csv_verified$behaviour_id, sep="_")
+    ),
+    !names(test_data_csv_verified) %in% c(
+      "behaviour_id",
+      "value",
+      "review_id"
+    )
+  ]
+)
+
+
+all_users <- unique(test_data_csv_verified[, c("user_id", "u.population_id")])
+
+## Calculate the average score per review ID
+
+average_score_per_review <- aggregate(value ~ review_id, test_data_csv_verified, mean)
+
+### Add back information about review session
+### NOTE: This assumes that the same reviewer always does the full review
+
+average_score_per_review <- data.frame(
+  average_score_per_review,
+  test_data_csv_verified[
+    match(
+      average_score_per_review$review_id,
+      test_data_csv_verified$review_id
+    ),
+    !names(test_data_csv_verified) %in% c(
+      "behaviour_title",
+      "behaviour_id",
+      "value",
+      "review_id"
+    )
+  ]
+)
+
+
+## Create user info dataframe
+
+user_info <- unique(average_score_per_review[, c("user_id")])
+user_info <- data.frame(
+  user_info,
+  average_score_per_review[
+    match(
+      user_info,
+      average_score_per_review$user_id
+    ),
+    user_characteristic_names
+  ]
+)
+
+## Order based on date
+
+average_score_per_review <- average_score_per_review[order(average_score_per_review$completed_at,
+                                                           decreasing = TRUE
+), ]
+
+
+latest_average_scores <- average_score_per_review[!duplicated(average_score_per_review$user_id), ]
+
+
+
+
+## Get ordered list of current populations
+
+current_population_ids <- sort(unique(average_score_per_review[, "u.population_id"]))
+
+num_ind_pops <- length(current_population_ids)
+
+# Select colours from colour-blind friendly palette
+# NOTE: This might need adjusted if number of population is over 12
+# minimum number of colours is three so [1:num_ind_pops] ensures correct number
+# if less than 3
+
+col_pal <- brewer.pal(n = num_ind_pops, name = "Paired")[1:num_ind_pops]
+
+
+#### Create html code so that populations are coloured in drop down loist
+
+current_population_ids <- setNames(
+  current_population_ids,
+  paste0(
+    "<span style='color:", col_pal,
+    "';>",
+    current_population_ids, "</span>"
+  )
+)
+
+```
+
+## Biased reporting
+
+```{r reviews, echo=FALSE, cache=TRUE}
+## Show score counts per reviwer type
+behave_counts_per_reviewer <- table(test_data_csv_verified$behaviour_title_short, 
+                                    test_data_csv_verified$relationship)
+
+## Convert to proportions
+
+behave_prop_per_reviewer <- apply(behave_counts_per_reviewer,2, prop.table)
+
+
+# Convert the matrix to a data frame
+data_df <- as.data.frame(as.table(t(behave_prop_per_reviewer)))
+```
+
+```{r reviews_plot, echo=FALSE, cache=TRUE}
+# How are behaviours distributed
+ggplot(data_df, aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "orange") +
+  theme_minimal() +
+  labs(x = "Relationship", 
+       y = "Bahaviour", 
+       title="Per Relationship Proportion of Behaviours reported",
+       fill = "Value") +
+  theme(axis.text.y = element_text(size = 5))
+
+```
+
+Different behaviours are not consistently scored. Establishing why this might be would be valuable.  A full set of scored behaviours would significantly improve the number of meaningful conclusions that could be drawn. The proportions of behaviours scored by each reviewer type appear fairly consistent.  However, there are a few noticable deviations.
+
+Managers rarely score on: `r behaviour_key[behaviour_key$behaviour_id == 454, "behaviour_title"]`
+
+Peers often score on: `r behaviour_key[behaviour_key$behaviour_id == 736, "behaviour_title"]`
+
+## Average Values assigned to each behaviour
+
+```{r behaves_plot, echo=FALSE, cache=TRUE}
+behave_counts_per_reviewer <- table(test_data_csv_verified$behaviour_title_short, 
+                                    test_data_csv_verified$relationship)
+
+
+
+average_value_per_behav_relation <- aggregate(value ~ behaviour_title_short + relationship, 
+                                              test_data_csv_verified, 
+                                              mean,
+                                              na.rm=TRUE)
+
+
+ggplot(average_value_per_behav_relation, aes(relationship, behaviour_title_short, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "orange") +
+  theme_minimal() +
+  labs(x = "X-axis", y = "Y-axis", fill = "Value") +
+  theme(axis.text.y = element_text(size = 5))
+```
+
+Interestingly in self reviews the behaviour '`r behaviour_key[behaviour_key$behaviour_id == 832, "behaviour_title"]`' is scored much lower on average than the others.
+
+Managers tend to score '`r behaviour_key[behaviour_key$behaviour_id == 666, "behaviour_title"]`' and '`r behaviour_key[behaviour_key$behaviour_id == 631, "behaviour_title"]`' higher on average.
+
+
+## Self Reflection vs Experiance by Others
+
+```{r self_dff_plot, echo=FALSE, cache=TRUE}
+av_value_per_behave <- aggregate(value ~ behaviour_id + self_review, 
+                                 test_data_csv_verified,
+                                 mean,
+                                 na.rm=TRUE)
+
+av_value_per_behave_self <- av_value_per_behave[av_value_per_behave$self_review, ]
+av_value_per_behave_not_self <- av_value_per_behave[!av_value_per_behave$self_review, ]
+
+
+
+av_value_per_behave_self$not_self_value <- av_value_per_behave_not_self[match(av_value_per_behave_self$behaviour_id,
+                                   av_value_per_behave_not_self$behaviour_id), "value"]
+
+
+av_value_per_behave_self <- av_value_per_behave_self[, !names(av_value_per_behave_self) %in% c("self_review")]
+
+names(av_value_per_behave_self) <- c("behaviour_id", "self.value", "non_self.value")
+av_value_per_behave_self[, "diff.value"] <- av_value_per_behave_self$non_self.value - av_value_per_behave_self$self.value 
+
+av_value_per_behave_self[, "short_name"] <- behaviour_key[match(av_value_per_behave_self$behaviour_id,
+                                                                behaviour_key$behaviour_id), "behaviour_title_short"]
+
+
+ggplot(av_value_per_behave_self , aes(x = factor(1), y = factor(short_name), fill = diff.value)) +
+  geom_tile() +  # Create tiles for the heat map
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +  # Color gradient
+  labs(title = "Average Difference between Self \nand Non-Self Reviews",
+       x = NULL,  # No label for x-axis
+       y = "Behaviour ID") +
+  theme_minimal() +  # Use a minimal theme
+  theme(axis.text.x = element_blank(),  # Remove x-axis text
+        axis.ticks.x = element_blank()) 
+```
+
+
+Self reviews almost always score higher than those from others, breaking this down into behaviours shows some interesting patterns.  For example '`r behaviour_key[behaviour_key$behaviour_id == 656, "behaviour_title"]`' is scored far lower on average by others.  In comparison self reviews and those by others appear in more agreement about '`r behaviour_key[behaviour_key$behaviour_id == 456, "behaviour_title"]`'.
+
+
+
+## Gender Disparities in Reviewer Scores
+
+Looking at the average values scored by those of different gender identities alone is likely to be biased by the population of users that they reviewed.  However, we can compare the score that the same user was given for the same behaviour by, for example, male and female reviewers (after removing self reviews).
+
+
+```{r mf_score_diff, echo=FALSE, cache=TRUE}
+test_data_csv_verified_no_self <- test_data_csv_verified[!test_data_csv_verified$self_review,]
+
+user_id_score <- aggregate(value ~ reviewer_id + behaviour_id + user_id + r.gender_identity, 
+                           test_data_csv_verified_no_self, 
+                           mean,
+                           na.rm=TRUE)
+
+male_reviewers <- subset(user_id_score, r.gender_identity=="Man")
+female_reviewers <- subset(user_id_score, r.gender_identity=="Woman")
+
+f.code <- paste(female_reviewers$user_id, female_reviewers$behaviour_id, sep="_")
+m.code <- paste(male_reviewers$user_id, male_reviewers$behaviour_id, sep="_")
+
+f.value <- female_reviewers[match(paste(male_reviewers$user_id, male_reviewers$behaviour_id, sep="_"),
+      paste(female_reviewers$user_id, female_reviewers$behaviour_id, sep="_"), nomatch = NA), 
+      c("value")]
+
+male_reviewers[, "f.value"] <- f.value
+
+male_reviewers[, "diff.value"] <- male_reviewers[, "f.value"] - male_reviewers[, "value"]
+
+
+
+av_values <-  aggregate(diff.value ~ behaviour_id, 
+          male_reviewers,
+          mean,
+          na.rm=TRUE)
+
+av_values[, "short_name"] <- behaviour_key[match(av_values$behaviour_id,
+                                                                behaviour_key$behaviour_id), "behaviour_title_short"]
+
+
+
+ggplot(av_values , aes(x = factor(1), y = factor(short_name), fill = diff.value)) +
+  geom_tile() +  # Create tiles for the heat map
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +  # Color gradient
+  labs(title = "Difference in score values \nprovided by men and women",
+       x = NULL,  # No label for x-axis
+       y = "Behaviour ID") +
+  theme_minimal() +  # Use a minimal theme
+  theme(axis.text.x = element_blank(),  # Remove x-axis text
+        axis.ticks.x = element_blank())  # Remove x-axis ticks
+
+
+
+```
+
+
+Overall female reviewers provide a score value of `r round(mean(male_reviewers[, "f.value"] - male_reviewers[, "value"], na.rm=TRUE), 1)` less than male reviewers do.  We can see that a main component of this is scores for the behaviour '`r behaviour_key[behaviour_key$behaviour_id == 628, "behaviour_title"]`'.  In contrast women tend to score higher for '`r behaviour_key[behaviour_key$behaviour_id == 834, "behaviour_title"]`' and '`r behaviour_key[behaviour_key$behaviour_id == 439, "behaviour_title"]`'.  Combined these behaviours indicate that woman tend to feel more that people are not receptive to the feedback they proved and also that they often don't feel heard or acknowledged.
+
+
+
+
+
+## Sexuality Disparities in Reviewer Scores
+
+In a similar way we can consider how reviewers of different sexualities score behaviours differently.  To keep sample sizes sensible I have split those that identify as straight and those that do not (LGBTQ+).  However, I acknowledge that this doesn't account for the unique experiences related to any particular sexual identity.
+
+
+```{r sq_score_diff, echo=FALSE, cache=TRUE}
+test_data_csv_verified_no_self <- test_data_csv_verified[!test_data_csv_verified$self_review,]
+
+
+test_data_csv_verified_no_self$is_straight <- ifelse(test_data_csv_verified_no_self$r.sexuality=="Heterosexual or straight",
+                                                     TRUE, 
+                                                     ifelse(test_data_csv_verified_no_self$r.sexuality=="Unknown",
+                                                     NA, FALSE) )
+
+user_id_score <- aggregate(value ~ reviewer_id + behaviour_id + user_id + is_straight, 
+                           test_data_csv_verified_no_self, 
+                           mean,
+                           na.rm=TRUE)
+
+straight_reviewers <- subset(user_id_score, is_straight)
+queer_reviewers <- subset(user_id_score, !is_straight)
+
+s.code <- paste(straight_reviewers$user_id, straight_reviewers$behaviour_id, sep="_")
+q.code <- paste(queer_reviewers$user_id, queer_reviewers$behaviour_id, sep="_")
+
+q.value <- queer_reviewers[match(paste(straight_reviewers$user_id, straight_reviewers$behaviour_id, sep="_"),
+      paste(queer_reviewers$user_id, queer_reviewers$behaviour_id, sep="_"), nomatch = NA), 
+      c("value")]
+
+straight_reviewers[, "q.value"] <- q.value
+
+straight_reviewers[, "diff.value"] <- straight_reviewers[, "q.value"] - straight_reviewers[, "value"]
+
+
+
+av_values <-  aggregate(diff.value ~ behaviour_id, 
+          straight_reviewers,
+          mean,
+          na.rm=TRUE)
+
+av_values[, "short_name"] <- behaviour_key[match(av_values$behaviour_id,
+                                                                behaviour_key$behaviour_id), "behaviour_title_short"]
+
+
+
+ggplot(av_values , aes(x = factor(1), y = factor(short_name), fill = diff.value)) +
+  geom_tile() +  # Create tiles for the heat map
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +  # Color gradient
+  labs(title = "Difference in score values provided\nby straight and LGBTQ+ reviewers",
+       x = NULL,  # No label for x-axis
+       y = "Behaviour ID") +
+  theme_minimal() +  # Use a minimal theme
+  theme(axis.text.x = element_blank(),  # Remove x-axis text
+        axis.ticks.x = element_blank())  # Remove x-axis ticks
+
+
+
+```
+
+
+Overall LGBTQ+ reviewers provide a score value of `r round(mean(straight_reviewers[, "q.value"] - straight_reviewers[, "value"], na.rm=TRUE), 1)` less than straight reviewers do.  The main values that are scored more negatively are '`r behaviour_key[behaviour_key$behaviour_id == 428, "behaviour_title"]`' and '`r behaviour_key[behaviour_key$behaviour_id == 735, "behaviour_title"]`'.  Suggesting, again that they perhaps feel that their solutions are not fully considered and that other employees are creating a negative experience with repeatable hurtful behaviour.
+
+They tend to score higher for '`r behaviour_key[behaviour_key$behaviour_id == 830, "behaviour_title"]`' and '`r behaviour_key[behaviour_key$behaviour_id == 461, "behaviour_title"]`'.  Perhaps suggesting that they place more value on these behaviors and how they affect the work environment.
+
+
